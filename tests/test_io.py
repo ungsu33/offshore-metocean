@@ -97,7 +97,7 @@ def test_export_report_manifest_and_formula_safety(tmp_path, demo, cfg):
 def test_cds_plan_separates_grids_and_valid_calendar():
     requests = era5_requests(35.5, 125.8, 2020, 2020)
     assert len(requests) == 24
-    feb = next(x for x in requests if x["filename"] == "era5_2020_02_wave.nc")
+    feb = next(x for x in requests if x["filename"].startswith("era5_2020_02_wave_"))
     assert len(feb["request"]["day"]) == 29
     assert "10m_u_component_of_wind" not in feb["request"]["variable"]
     assert "key" not in json.dumps(requests)

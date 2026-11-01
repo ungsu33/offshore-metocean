@@ -2,12 +2,14 @@ import os
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPalette
 
 from offshore_metocean.gui import MainWindow, configure_app
 
 
 def test_gui_analysis_export_and_stale_result_invalidation(qtbot, tmp_path, qapp):
     configure_app(qapp)
+    assert qapp.palette().color(QPalette.ColorRole.Window).lightness() > 200
     window = MainWindow()
     qtbot.addWidget(window)
     window.show()

@@ -14,6 +14,16 @@ python -m venv .venv
 
 설치 후에는 **`launch_gui.bat`를 더블클릭**해 실행할 수 있습니다. `setup.ps1 -PythonExe 'C:\path\to\python.exe'`로 Python 경로를 지정해 설치해도 됩니다.
 
+합성 예제와 분석을 바로 열려면 다음 명령을 사용합니다.
+
+```powershell
+.\.venv\Scripts\python.exe -m offshore_metocean gui --demo --run
+# 저장한 프로젝트를 열려면:
+.\.venv\Scripts\python.exe -m offshore_metocean gui --config projects\site.local.json
+```
+
+Windows의 실행 오류와 작업 오류는 `%LOCALAPPDATA%\OffshoreMetocean\logs\app.log`에 기록합니다. 시작 실패 시 로그 경로를 안내하며, API 인증정보는 로그에서 마스킹합니다. `OFFSHORE_METOCEAN_LOG_DIR`로 로그 폴더를 바꿀 수 있습니다.
+
 macOS/Linux:
 
 ```bash
@@ -32,6 +42,8 @@ python3 -m venv .venv
 6. **검토·출력**: 선택 후보의 예비 채택/반려 기록 후 Excel·CSV·HTML 보고서·설정·체크섬 manifest 내보내기. 합성 예제·보류 자료·원문 매핑 미확인 행은 설계값 채택이 차단됩니다.
 
 화면 위 **합성 예제** → **분석 실행**으로 실제 자료 없이 전체 흐름을 확인할 수 있습니다. 합성값은 어떤 실제 좌표의 관측·hindcast도 아니며 설계용으로 채택할 수 없습니다. 입력 변경 시 이전 결과의 검토·내보내기는 무효화됩니다.
+
+긴 작업은 **작업 취소**로 중단 요청할 수 있습니다. 분석은 다음 bootstrap/처리 경계에서 중단합니다. CDS 다운로드의 진행 중인 요청은 응답을 받은 뒤 중단하므로 즉시 멈추지 않을 수 있습니다. 완료된 파일은 유지하고, 중단된 파일은 `.partial.nc`로 남겨 완성 캐시와 구분합니다. 작업 중 창을 닫으면 취소를 요청하고 안전하게 끝난 뒤 종료합니다.
 
 ## 입력 자료
 
@@ -80,6 +92,8 @@ timestamp,wind_speed,hs,tp,wind_dir,wave_dir
 **데이터 소스** 화면에서 공식 문서를 열거나 ERA5의 월별 API 요청 계획을 저장·실행할 수 있습니다. CDS 계정의 개인 토큰과 데이터셋 이용약관 동의는 사용자가 준비해야 합니다. 인증정보는 사용자 `.cdsapirc` 또는 `CDSAPI_URL/CDSAPI_KEY`에서 읽으며 프로젝트에 저장하지 않습니다. 대기·파랑은 분리 요청하고 다운로드 캐시의 NetCDF 구조를 확인합니다.
 
 ERA5 풍속은 순간값이므로 기본 목표인 10분 평균 허브풍속에 자동 채택되지 않습니다. API 다운로드가 됐다는 사실이 자료의 설계 적합성 통과를 의미하지 않습니다. 기상청·NOAA의 확보 파일은 CSV/NetCDF로 불러올 수 있으며, 이 버전에는 기상청·NOAA 계정 API 자동 다운로드 기능이 포함되지 않습니다.
+
+ERA5 캐시 파일명에는 좌표·기간·변수 등 요청 내용의 해시를 포함합니다. 재사용 시 `.request.json`의 요청 해시와 NetCDF 체크섬을 함께 확인하므로 다른 지점이나 변경된 파일을 조용히 재사용하지 않습니다. 다운로드 중 입력 조건이 바뀌면 파일은 보존하되 현재 프로젝트에 자동 연결하지 않습니다.
 
 ## CLI / 자동 검사
 

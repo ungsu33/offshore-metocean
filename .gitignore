@@ -14,7 +14,11 @@ dist/
 *.key
 data/
 results/
+run_*/
+logs/
 projects/
+*.request.json
+era5_request_plan.json
 *.nc
 *.grib
 *.grb

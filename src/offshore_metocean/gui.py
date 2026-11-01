@@ -9,8 +9,8 @@ import sys
 
 import numpy as np
 import pandas as pd
-from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QThread, Signal, QUrl
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontDatabase
+from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex, QThread, Signal, QUrl, QTimer
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontDatabase, QPalette
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QListWidget, QMainWindow, QMessageBox, QProgressBar, QPushButton, QScrollArea, QSpinBox,
@@ -25,6 +25,7 @@ from .data import Dataset, demo_datasets, load_files
 from .export import export_result
 from .models import DLCRule, Project, SourceMeta, STATUS_LABELS
 from .providers import CATALOG, download_era5, era5_metadata, era5_requests, save_request_plan
+from .tasks import TaskCancelled
 
 STYLE = """
 QMainWindow,QWidget#workspace{background:#f1f5f7;color:#183644}
@@ -135,14 +136,33 @@ class Worker(QThread):
     progress = Signal(int, str)
     success = Signal(object)
     failure = Signal(str)
+    cancelled = Signal()
 
     def __init__(self, task, parent=None):
         super().__init__(parent)
         self.task = task
+        from threading import Event
+        self.cancel_requested = Event()
+
+    def cancel(self):
+        self.cancel_requested.set()
+
+    def checkpoint(self):
+        if self.cancel_requested.is_set():
+            raise TaskCancelled()
+
+    def report_progress(self, value, message):
+        self.checkpoint()
+        self.progress.emit(value, message)
 
     def run(self):
         try:
-            self.success.emit(self.task(self.progress.emit))
+            self.checkpoint()
+            result = self.task(self.report_progress, self.checkpoint)
+            self.checkpoint()
+            self.success.emit(result)
+        except TaskCancelled:
+            self.cancelled.emit()
         except Exception as exc:
             import os
             message = str(exc)
@@ -221,8 +241,13 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("Offshore Metocean · Wind & Wave Design Workbench")
         self.resize(1460, 940)
         self.setMinimumSize(1120, 760)
+        if QApplication.platformName() != "offscreen" and QApplication.primaryScreen():
+            available = QApplication.primaryScreen().availableGeometry()
+            self.resize(min(1460, max(1120, available.width()-48)),
+                        min(940, max(760, available.height()-60)))
         self.cfg, self.result, self.demo, self.worker = Project(), None, None, None
         self._loading, self._revision = True, 0
+        self._close_after_task = False
         self.files = {"primary": [], "comparison": [], "observation": []}
         root = QWidget(objectName="workspace")
         self.setCentralWidget(root)
@@ -255,6 +280,9 @@ class MainWindow(QMainWindow):
         bar.addWidget(button("합성 예제", self.load_demo))
         self.run_button = button("분석 실행 →", self.start_analysis, True)
         bar.addWidget(self.run_button)
+        self.cancel_button = button("작업 취소", self.request_cancel)
+        self.cancel_button.setEnabled(False)
+        bar.addWidget(self.cancel_button)
         right.addWidget(top)
         body = QVBoxLayout()
         body.setContentsMargins(26, 23, 26, 18)
@@ -270,6 +298,7 @@ class MainWindow(QMainWindow):
         body.addWidget(self.pages, 1)
         self.progress = QProgressBar()
         self.progress.setTextVisible(False)
+        self.progress.setValue(0)
         body.addWidget(self.progress)
         self.status_label = QLabel("프로젝트 설정 또는 합성 예제로 시작하세요. 실제 설계자료는 직접 불러옵니다.", objectName="subtitle", wordWrap=True)
         body.addWidget(self.status_label)
@@ -525,7 +554,8 @@ class MainWindow(QMainWindow):
             layout.addWidget(group)
         group = QGroupBox("ERA5 / CDS 요청")
         form = QFormLayout(group)
-        self.first_year, self.last_year = integer(2000, 1940, 2100), integer(2020, 1940, 2100)
+        self.first_year = self.track(integer(2000, 1940, 2100))
+        self.last_year = self.track(integer(2020, 1940, 2100))
         form.addRow("시작 연도", self.first_year)
         form.addRow("끝 연도", self.last_year)
         row = QHBoxLayout()
@@ -688,7 +718,8 @@ class MainWindow(QMainWindow):
             self.result = None
             self.export_button.setEnabled(False)
             self.review_button.setEnabled(False)
-            def task(progress):
+            def task(progress, checkpoint):
+                checkpoint()
                 if demo:
                     primary = Dataset(demo[0].frame, replace(cfg.source_meta, synthetic=True), demo[0].provenance)
                     comparison = Dataset(demo[1].frame, replace(cfg.comparison_meta, synthetic=True), demo[1].provenance)
@@ -697,27 +728,51 @@ class MainWindow(QMainWindow):
                     primary = load_files(cfg.primary_files, cfg.source_meta, cfg)
                     comparison = load_files(cfg.comparison_files, cfg.comparison_meta, cfg) if cfg.comparison_files else None
                     observation = load_files(cfg.observation_files, cfg.observation_meta, cfg) if cfg.observation_files else None
-                return revision, run_analysis(primary, cfg, comparison, observation, progress)
+                return revision, run_analysis(primary, cfg, comparison, observation, progress, checkpoint)
             self.launch_worker(task, self.analysis_done)
         except Exception as exc:
             self.show_error(str(exc))
 
     def launch_worker(self, task, handler):
-        self.worker = Worker(task, self)
+        self.worker = Worker(task)
         self.worker.progress.connect(self.on_progress)
         self.worker.success.connect(handler)
         self.worker.failure.connect(self.show_error)
-        self.worker.finished.connect(lambda: self.run_button.setEnabled(True))
-        self.worker.finished.connect(lambda: self.cds_button.setEnabled(True))
+        self.worker.cancelled.connect(self.on_cancelled)
+        self.worker.finished.connect(self.finish_task)
         self.run_button.setEnabled(False)
         self.cds_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.progress.setValue(0)
         self.worker.start()
+
+    def request_cancel(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.cancel()
+            self.cancel_button.setEnabled(False)
+            self.status_label.setText("취소 요청을 받았습니다. 다음 안전 지점에서 중단합니다. 진행 중인 CDS 요청은 응답 후 중단됩니다.")
+
+    def on_cancelled(self):
+        self.progress.setValue(0)
+        self.status_label.setText("작업을 취소했습니다. 설정과 완료된 다운로드 파일은 유지됩니다.")
+        if self.result is None:
+            self.result_notice.setText("작업 취소 / 완료된 분석 결과가 없습니다. 설정을 확인한 뒤 다시 실행할 수 있습니다.")
+
+    def finish_task(self):
+        self.run_button.setEnabled(True)
+        self.cds_button.setEnabled(True)
+        self.cancel_button.setEnabled(False)
+        if self._close_after_task:
+            self.close()
 
     def on_progress(self, value, message):
         self.progress.setValue(value)
         self.status_label.setText(message)
 
     def analysis_done(self, payload):
+        if self.worker and self.worker.cancel_requested.is_set():
+            self.on_cancelled()
+            return
         revision, result = payload
         if revision != self._revision:
             self.status_label.setText("분석 중 설정 변경: 결과를 보류했습니다. 현재 설정으로 다시 분석하세요.")
@@ -831,11 +886,20 @@ class MainWindow(QMainWindow):
             requests = self.cds_plan()
             folder = QFileDialog.getExistingDirectory(self, "ERA5 다운로드 폴더")
             if folder:
-                self.launch_worker(lambda progress: download_era5(requests, folder, progress), self.cds_done)
+                revision = self._revision
+                self.launch_worker(lambda progress, checkpoint: (
+                    revision, download_era5(requests, folder, progress, checkpoint)), self.cds_done)
         except Exception as exc:
             self.show_error(str(exc))
 
-    def cds_done(self, files):
+    def cds_done(self, payload):
+        revision, files = payload
+        if self.worker and self.worker.cancel_requested.is_set():
+            self.on_cancelled()
+            return
+        if revision != self._revision:
+            self.status_label.setText("다운로드 파일은 저장됐지만 입력 조건이 변경돼 자동 연결은 보류했습니다. 올바른 지점·기간의 파일을 직접 선택하세요.")
+            return
         self.demo = None
         self.files = {"primary": files, "comparison": [], "observation": []}
         self.meta_editors["primary"].set_meta(era5_metadata())
@@ -846,12 +910,16 @@ class MainWindow(QMainWindow):
         self.status_label.setText("다운로드 완료. 제공 격자·공간 대표성을 확인하고 비교자료를 추가하세요. 순간 풍속의 평균시간은 변환하지 않습니다.")
 
     def show_error(self, text):
+        import logging
+        logging.getLogger("offshore_metocean").warning("Task/input error: %s", text)
         self.status_label.setText(text)
         QMessageBox.warning(self, "입력·자료 확인", text)
 
     def closeEvent(self, event):
         if self.worker and self.worker.isRunning():
-            self.status_label.setText("작업 진행 중입니다. 완료 후 닫아 주세요.")
+            self._close_after_task = True
+            self.request_cancel()
+            self.status_label.setText("종료 요청: 작업을 안전하게 중단한 뒤 창을 닫습니다. 현재 CDS 요청은 응답을 기다릴 수 있습니다.")
             event.ignore()
         else:
             event.accept()
@@ -869,15 +937,35 @@ def configure_app(app):
     family = next((name for name in ("Malgun Gothic", "Noto Sans CJK KR", "Segoe UI", "DejaVu Sans")
                    if name in available), "sans-serif")
     app.setStyle("Fusion")
+    palette = QPalette()
+    for role, color in ((QPalette.ColorRole.Window, "#f1f5f7"),
+                        (QPalette.ColorRole.WindowText, "#183644"),
+                        (QPalette.ColorRole.Base, "#ffffff"),
+                        (QPalette.ColorRole.AlternateBase, "#f5f9fa"),
+                        (QPalette.ColorRole.Text, "#183644"),
+                        (QPalette.ColorRole.Button, "#ffffff"),
+                        (QPalette.ColorRole.ButtonText, "#183644"),
+                        (QPalette.ColorRole.Highlight, "#d4ece7"),
+                        (QPalette.ColorRole.HighlightedText, "#163c4b")):
+        palette.setColor(role, QColor(color))
+    app.setPalette(palette)
     app.setFont(QFont(family, 10))
     app.setStyleSheet(STYLE)
 
 
-def main():
+def main(config_path=None, demo=False, auto_run=False):
     app = QApplication.instance() or QApplication(sys.argv[:1])
     configure_app(app)
     window = MainWindow()
+    if config_path:
+        cfg = Project.load(config_path)
+        window.demo = demo_datasets() if cfg.demo_mode else None
+        window.load_settings(cfg)
+    elif demo:
+        window.load_demo()
     window.show()
+    if auto_run:
+        QTimer.singleShot(0, window.start_analysis)
     return app.exec()
 
 

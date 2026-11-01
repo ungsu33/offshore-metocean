@@ -2,10 +2,16 @@
 from __future__ import annotations
 
 import calendar
+import hashlib
 import json
 from pathlib import Path
 
 from .models import SourceMeta
+
+
+def request_fingerprint(dataset, request):
+    payload = json.dumps({"dataset": dataset, "request": request}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 CATALOG = [
@@ -59,8 +65,10 @@ def era5_requests(latitude, longitude, first_year, last_year):
                     "time": [f"{h:02d}:00" for h in range(24)],
                     "data_format": "netcdf", "download_format": "unarchived",
                     "area": [north, west, south, east]}
-                requests.append({"dataset": "reanalysis-era5-single-levels", "request": request,
-                                 "filename": f"era5_{year}_{month:02d}_{group}.nc"})
+                dataset = "reanalysis-era5-single-levels"
+                fingerprint = request_fingerprint(dataset, request)
+                requests.append({"dataset": dataset, "request": request,
+                                 "filename": f"era5_{year}_{month:02d}_{group}_{fingerprint[:12]}.nc"})
     return requests
 
 
@@ -72,32 +80,56 @@ def save_request_plan(requests, directory):
     return path
 
 
-def download_era5(requests, directory, progress=None):
+def download_era5(requests, directory, progress=None, checkpoint=None):
     import cdsapi
     from .data import open_netcdf
+    checkpoint = checkpoint or (lambda: None)
+    checkpoint()
+    if not requests:
+        raise ValueError("다운로드 요청이 없습니다.")
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     save_request_plan(requests, directory)
     # Uses the user's existing .cdsapirc/CDSAPI_URL/CDSAPI_KEY; never persist keys in a project.
-    client = cdsapi.Client(quiet=True, progress=False, timeout=120)
+    try:
+        client = cdsapi.Client(quiet=True, progress=False, timeout=120)
+    except (ValueError, OSError) as exc:
+        raise ValueError("CDS 인증 설정을 확인하세요. 개인 .cdsapirc 또는 CDSAPI_URL/CDSAPI_KEY와 데이터셋 약관 동의가 필요합니다.") from exc
     outputs = []
     for i, item in enumerate(requests):
+        checkpoint()
         if progress:
             progress(int(i/len(requests)*100), f"CDS {i+1}/{len(requests)} · {item['filename']}")
         target = directory / item["filename"]
+        if Path(item["filename"]).name != item["filename"]:
+            raise ValueError("캐시 파일명에는 경로를 포함할 수 없습니다.")
+        signature = request_fingerprint(item["dataset"], item["request"])
+        receipt = target.with_suffix(".request.json")
         # Do not silently treat a partial/corrupt cached file as valid.
         if target.exists():
+            if not receipt.exists():
+                raise ValueError(f"요청 근거 없는 캐시입니다: {target.name}. 새 다운로드 폴더를 선택하세요.")
+            record = json.loads(receipt.read_text(encoding="utf-8"))
+            if record.get("request_sha256") != signature:
+                raise ValueError(f"다른 좌표·기간·변수의 캐시입니다: {target.name}. 새 다운로드 폴더를 선택하세요.")
+            if record.get("file_sha256") != hashlib.sha256(target.read_bytes()).hexdigest():
+                raise ValueError(f"캐시 파일 체크섬이 다릅니다: {target.name}. 원자료를 확인하세요.")
             with open_netcdf(target) as ds:
                 if not ds.data_vars:
                     raise ValueError(f"캐시 파일에 변수가 없습니다: {target.name}")
         else:
             temporary = target.with_suffix(".partial.nc")
             client.retrieve(item["dataset"], item["request"], str(temporary))
+            checkpoint()
             with open_netcdf(temporary) as ds:
                 if not ds.data_vars:
                     raise ValueError("CDS 응답이 유효한 NetCDF가 아닙니다.")
             temporary.replace(target)
+            receipt.write_text(json.dumps({"request_sha256": signature,
+                "file_sha256": hashlib.sha256(target.read_bytes()).hexdigest(),
+                "dataset": item["dataset"], "request": item["request"]}, indent=2), encoding="utf-8")
         outputs.append(str(target))
     if progress:
         progress(100, "ERA5 다운로드 완료 · 원래 시간/격자 정의를 확인하세요")
+    checkpoint()
     return outputs

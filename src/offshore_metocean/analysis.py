@@ -164,7 +164,9 @@ def annual_maxima(series, interval_minutes, min_coverage):
     return pd.DataFrame(rows)
 
 
-def extreme_estimates(series, interval, cfg, variable, data_status):
+def extreme_estimates(series, interval, cfg, variable, data_status, checkpoint=None):
+    checkpoint = checkpoint or (lambda: None)
+    checkpoint()
     annual = annual_maxima(series, interval, cfg.min_annual_coverage)
     annual.insert(0, "variable", variable)
     maxima = annual.loc[annual.included, "maximum"].dropna().to_numpy(dtype=float)
@@ -189,6 +191,7 @@ def extreme_estimates(series, interval, cfg, variable, data_status):
                     raise ValueError("유한하지 않은 적합 결과")
                 rng = np.random.default_rng(cfg.random_seed + (0 if variable == "wind_speed" else 1))
                 for _ in range(cfg.bootstrap_samples):
+                    checkpoint()
                     sample = rng.choice(maxima, len(maxima), replace=True)
                     if np.std(sample) < 1e-8:
                         continue
@@ -368,7 +371,9 @@ def apply_review(result, indices, decision):
                 df.loc[index, f"{var}_candidate_deg"] if decision == "accepted_preliminary" else None)
 
 
-def run_analysis(primary, cfg, comparison=None, observation=None, progress=None):
+def run_analysis(primary, cfg, comparison=None, observation=None, progress=None, checkpoint=None):
+    checkpoint = checkpoint or (lambda: None)
+    checkpoint()
     cfg.validate()
     progress = progress or (lambda value, message: None)
     progress(10, "자료 정의와 비교 가능성 점검")
@@ -386,11 +391,12 @@ def run_analysis(primary, cfg, comparison=None, observation=None, progress=None)
     for i, variable in enumerate(("wind_speed", "hs")):
         progress(45+i*20, f"{variable} 연최대 {cfg.extreme_method} 적합과 bootstrap")
         extreme, annual = extreme_estimates(prepared[variable], primary.meta.output_minutes,
-                                             cfg, variable, statuses[variable])
+                                             cfg, variable, statuses[variable], checkpoint)
         all_extreme.append(extreme)
         all_annual.append(annual)
     extremes = pd.concat(all_extreme, ignore_index=True)
     progress(85, "DLC 환경조건 후보 및 근거 연결")
+    checkpoint()
     dlc = dlc_candidates(prepared, conditional, extremes, quality, cfg)
     summary = primary.frame.describe(percentiles=[.5, .9, .95, .99]).T.reset_index(names="variable")
     summary["scope"] = "raw-source descriptive statistics; not design values"

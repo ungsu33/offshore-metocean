@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "offshore-metocean"
-version = "0.1.0"
+version = "0.1.1"
 description = "Traceable wind-wave assessment and DLC candidate workbench"
 requires-python = ">=3.11"
 dependencies = [
@@ -18,7 +18,7 @@ dev = ["pytest>=8", "pytest-qt>=4.4", "ruff>=0.9"]
 
 [project.scripts]
 offshore-metocean = "offshore_metocean.cli:main"
-offshore-metocean-gui = "offshore_metocean.gui:main"
+offshore-metocean-gui = "offshore_metocean.cli:gui_entry"
 
 [tool.setuptools.packages.find]
 where = ["src"]
