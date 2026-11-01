@@ -1,0 +1,30 @@
+{
+  "name": "사용자 자료",
+  "provider": "User",
+  "version": "",
+  "kind": "hindcast",
+  "reference": "",
+  "site_assessment": "",
+  "atmosphere_grid_km": null,
+  "wave_grid_km": null,
+  "forcing_grid_km": null,
+  "delivery_grid_km": null,
+  "integration_minutes": null,
+  "output_minutes": null,
+  "wind_statistic": "unknown",
+  "wind_average_minutes": null,
+  "wind_height_m": null,
+  "period_definition": "unknown",
+  "direction_convention": "unknown",
+  "timezone": "UTC",
+  "homogeneous": false,
+  "lineage": "",
+  "synthetic": false,
+  "units": {
+    "wind_speed": "m/s",
+    "hs": "m",
+    "tp": "s",
+    "wind_dir": "deg",
+    "wave_dir": "deg"
+  }
+}
